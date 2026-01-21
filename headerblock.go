@@ -88,6 +88,40 @@ func parseAllowedIPs(raw []string, logEnabled bool) []*net.IPNet {
 	return ipNets
 }
 
+func getClientIP(req *http.Request) net.IP {
+	// 1. X-Forwarded-For (Traefik trusted chain)
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			ip := strings.TrimSpace(parts[0])
+			if parsed := net.ParseIP(ip); parsed != nil {
+				return parsed
+			}
+		}
+	}
+
+	// 2. Fallback to RemoteAddr (already ProxyProtocol-processed by Traefik)
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return net.ParseIP(req.RemoteAddr)
+	}
+
+	return net.ParseIP(host)
+}
+
+func isIPAllowed(ip net.IP, nets []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // New creates a new headerBlock plugin.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	ipNets := parseAllowedIPs(config.AllowedIPs, config.Log)
@@ -136,38 +170,11 @@ func isWhitelisted(name string, values []string, whitelist []rule) bool {
 }
 
 func (c *headerBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	// IP allowlist logic
-	if len(c.allowedIPNets) > 0 {
-		host, _, err := net.SplitHostPort(req.RemoteAddr)
-		if err != nil {
-			host = req.RemoteAddr
-		}
-
-		clientIP := net.ParseIP(host)
-		allowed := false
-
-		for _, net := range c.allowedIPNets {
-			if net.Contains(clientIP) {
-				allowed = true
-				break
-			}
-		}
-
-		if !allowed {
-			if c.log {
-				log.Printf("%s: access denied - IP not allowed: %s", req.URL.String(), clientIP)
-			}
-			rw.WriteHeader(http.StatusForbidden)
-			return
-		}
-	}
-
-	// Header-based enforcement
 	for name, values := range req.Header {
 		for _, blockRule := range c.requestHeaderRules {
 			if applyRule(blockRule, name, values) {
 
-				// header is blocked → check whitelist for THIS header/value
+				// Header is blocked → check whitelist by header/value
 				if isWhitelisted(name, values, c.whitelistRequestRules) {
 					if c.log {
 						log.Printf("%s: access allowed - whitelisted header %s", req.URL.String(), name)
@@ -175,15 +182,37 @@ func (c *headerBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					continue
 				}
 
-				if c.log {
-					log.Printf("%s: access denied - blocked header %s", req.URL.String(), name)
+				// Header violation → check allowed IPs
+				clientIP := getClientIP(req)
+				if isIPAllowed(clientIP, c.allowedIPNets) {
+					if c.log {
+						log.Printf(
+							"%s: access allowed - IP %s bypassed blocked header %s",
+							req.URL.String(),
+							clientIP,
+							name,
+						)
+					}
+					continue
 				}
+
+				// Final deny
+				if c.log {
+					log.Printf(
+						"%s: access denied - blocked header %s from IP %s",
+						req.URL.String(),
+						name,
+						clientIP,
+					)
+				}
+
 				rw.WriteHeader(http.StatusForbidden)
 				return
 			}
 		}
 	}
 
+	// No blocking rules matched
 	c.next.ServeHTTP(rw, req)
 }
 
