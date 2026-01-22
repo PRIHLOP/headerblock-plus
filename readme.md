@@ -7,9 +7,6 @@ Header Block is a middleware plugin for [Traefik](https://github.com/traefik/tra
 ### Static
 
 ```yaml
-pilot:
-  token: "xxxxx"
-
 experimental:
   plugins:
     headerblock:
@@ -38,6 +35,10 @@ http:
           whitelistRequestHeaders:
             - name: "Cf-Ipcountry"
               value: "VN"
+          allowedIPs:
+            - "1.1.1.1/32, 2.2.2.2/32"
+            - "3.3.3.3/32"
+            - "4.4.4.4"
 ```
 
 ### Example headerblock.yaml
@@ -62,6 +63,10 @@ http:
           whitelistRequestHeaders:
             - name: "Cf-Ipcountry"
               value: "VN"
+          allowedIPs:
+            - "1.1.1.1/32, 2.2.2.2/32"
+            - "3.3.3.3/32"
+            - "4.4.4.4"
 ```
 
 ### Example docker-compose.yml
